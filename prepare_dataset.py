@@ -16,6 +16,7 @@ def create_subfolders(root_folder, subfolders):
     for folder in subfolders:
         folder_path = os.path.join(root_folder, folder)
         os.makedirs(folder_path, exist_ok=True)
+    print("Directories created sucessfully")
 
 
 def split_and_copy_files(source_folder, destination_folders, split_ratio, filter_ext):
@@ -46,16 +47,19 @@ def split_and_copy_files(source_folder, destination_folders, split_ratio, filter
     valid_files = file_list[split_index2:]
 
     # Looping over each file and copy to the destination folders
+    print(f"Copying {len(train_files)} files to {destination_folders[0]}")
     for file_name in train_files:
         src_path = os.path.join(source_folder, file_name)
         dest_path = os.path.join(destination_folders[0], file_name)
         shutil.copy(src_path, dest_path)
-
+        
+    print(f"Copying {len(test_files)} files to {destination_folders[1]}")
     for file_name in test_files:
         src_path = os.path.join(source_folder, file_name)
         dest_path = os.path.join(destination_folders[1], file_name)
         shutil.copy(src_path, dest_path)
-
+        
+    print(f"Copying {len(valid_files)} files to {destination_folders[2]}")
     for file_name in valid_files:
         src_path = os.path.join(source_folder, file_name)
         dest_path = os.path.join(destination_folders[2], file_name)
@@ -83,6 +87,8 @@ def create_data_yaml(path):
     # Save the YAML content to a file
     with open(path, "w") as yaml_file:
         yaml_file.write(yaml_content)
+    
+    print(f"{path} created sucessfully")
 
 
 if __name__ == "__main__":
