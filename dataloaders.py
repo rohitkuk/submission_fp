@@ -121,10 +121,15 @@ def create_dataloader(path,
         LOGGER.warning('WARNING ⚠️ --rect is incompatible with DataLoader shuffle, setting shuffle=False')
         shuffle = False
     with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
-
+        
+#--------------------------------------Customized for Finger Print Dataset--------------------------------------#
+        # instantiating the fingerprint dataset class with the path
         dataset = FingerPrintDataset(path)
+        #Creating the labels as genrally they are read from label files
         dataset.labels = [np.array(dataset[i][1], dtype = np.float32)[:,1:] for i in range(len(dataset))]
-        dataset.shapes = np.array([[1024,1024] for i in range(len(dataset)) ])
+        #Creating a shape array
+        dataset.shapes = np.array([dataset.canvas_size for i in range(len(dataset)) ])
+#--------------------------------------------------------------------------------------------------------------#
 
     batch_size = min(batch_size, len(dataset))
     nd = torch.cuda.device_count()  # number of CUDA devices
@@ -422,44 +427,116 @@ def img2label_paths(img_paths):
     return [sb.join(x.rsplit(sa, 1)).rsplit('.', 1)[0] + '.txt' for x in img_paths]
 
 
-
+#--------------------------------------Customized for Finger Print Dataset--------------------------------------#
 class FingerPrintDataset(Dataset):
+    """
+    Custom dataset class for working with fingerprint image pairs.
+
+    This dataset class loads pairs of fingerprint images, processes them, and provides them as inputs
+    for training.
+
+    Args:
+        path (str): Path to the directory containing fingerprint images.
+        canvas_size : Size of canvas which will contain the cropped fingerprints
+
+    Attributes:
+        images_path (list): List of paths to the fingerprint images.
+        random_pairs (list): List of random image pairs for training or evaluation.
+    """
     
-    def __init__(self, path):
+    def __init__(self, path, canvas_size = (1024, 1024)):
+        """
+        Initialize the FingerPrintDataset.
+
+        Args:
+            path (str): Path to the directory containing fingerprint images.
+        """
+        # Listing the File paths
         self.images_path = glob.glob(path+"/*")
+        #Creating random pairs
         self.random_pairs = self.create_random_pairs(self.images_path)
+        # Canvas size
+        self.canvas_size = canvas_size
+        
+        
         
     def create_random_pairs(self,elems):
+        """
+        Create random pairs of image paths from the given list.
+
+        Args:
+            elems (list): List of image paths.
+
+        Returns:
+            list: List of random image pairs.
+        """
+        # Shuffling the elements to introduce Randomization.
         random.shuffle(elems)
+        #returns a list of list with adjacent element which is random as alread shuffled
         return [(elems[i], elems[i+1]) for i in range(0, len(elems), 2)]
     
     def crop_finger_print(self, path):
-        # print(path)
-        image = cv2.imread(path) #raw RGB image
-        gray = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) #gray scale image
-        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        """
+        Crop the fingerprint from the given image.
 
+        Args:
+            path (str): Path to the image.
+
+        Returns:
+            numpy.ndarray: Cropped fingerprint image.
+        """
+        # Reading Image
+        image = cv2.imread(path) #raw RGB image
+        # Converting to Gray scale
+        gray = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY) #gray scale image
+        # Adding Guassian Blurring
+        blurred = cv2.GaussianBlur(gray, (3, 3), 0)
+        # Extracting Edges
         edged = cv2.Canny(blurred, 10, 100)
+        # Finding Contours of the canny edged image
         contours, _ = cv2.findContours(edged, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        image_copy = image.copy()
+        
+        #storing top left and bottom right bounding boxes for each contour. 
         boxes = []
         for c in contours:
             (x, y, w, h) = cv2.boundingRect(c)
             boxes.append([x,y, x+w,y+h])
 
         boxes = np.asarray(boxes)
+        # Finding a min of top left cordinates 
         left, top = np.min(boxes, axis=0)[:2]
+        # Finding a min of top left cordinates 
         right, bottom = np.max(boxes, axis=0)[2:]
 
-        top_left = (left,top)
-        bottom_right = (right,bottom)
+        """
+        By doing the above we will find the cordinates of 
+        the bounding box encompassing all the contours.
+        """
+
+        top_left = (left,top) # Top Left
+        bottom_right = (right,bottom) # Bottom Right
+        
+        #Calculating hight and width 
         height = bottom_right[1] - top_left[1]
         width = bottom_right[0] - top_left[0]
+        
+        # cropping the portion of the image containing the fingerprint
         cropped_image = image[top_left[1]:bottom_right[1], top_left[0]:bottom_right[0]]
         return cropped_image
         
 
     def paste_image(self, canvas, image, position):
+        """
+        Paste an image on the canvas at the specified position.
+
+        Args:
+            canvas (numpy.ndarray): Canvas to paste the image on.
+            image (numpy.ndarray): cropped image to be pasted.
+            position (tuple): Position (x, y) top left coords
+
+        Returns:
+            list: Coordinates of the pasted image (x1, y1, x2, y2).
+        """
         height, width, _ = image.shape
         x, y = position
         canvas[y:y+height, x:x+width] = image
@@ -468,38 +545,89 @@ class FingerPrintDataset(Dataset):
         
 
     def combined_image_on_canvas(self, canvas_size, image1, image2):
-        canvas = np.ones((canvas_size[1], canvas_size[0], 3), dtype=np.uint8) * 255
-        # Generate random positions for pasting the images
-        max_x1 = canvas_size[0] // 2 - image1.shape[1]
-        max_y1 = canvas_size[1] - image1.shape[0]
-        max_x2 = canvas_size[0] - image2.shape[1]
-        max_y2 = canvas_size[1] - image2.shape[0]
+        """
+        Combine two images on a canvas.
 
+        Args:
+            canvas_size (tuple): Size of the canvas (width, height).
+            image1 (numpy.ndarray): First cropped image.
+            image2 (numpy.ndarray): Second cropped image.
+
+        Returns:
+            tuple: Tuple containing the combined canvas, labels for image1, and labels for image2.
+        """
+        # Creating a white canvas, Intialize a matrix by ones of shame shape multiple by 255 to get white
+        canvas = np.ones((canvas_size[0], canvas_size[1], 3), dtype=np.uint8) * 255
+        
+        # Generate random positions for pasting the images
+        
+        # calculating valid width range for imag1
+        max_x1 = canvas_size[1] // 2 - image1.shape[1]
+        # calculating valid height range for imag1
+        max_y1 = canvas_size[0] - image1.shape[0]
+        
+        # calculating valid width range for imag2
+        max_x2 = canvas_size[1] - image2.shape[1]
+        # calculating valid height range for imag2
+        max_y2 = canvas_size[0] - image2.shape[0]
+        
+        # Generating random Top Left Cordinates for image1 between(0, valid width)
         random_x1 = random.randint(0, max_x1)
         random_y1 = random.randint(0, max_y1)
-        random_x2 = random.randint(canvas_size[0] // 2, max_x2)
+        
+        # Generating random Top Left Cordinates for image2 between (half width, valid width)
+        random_x2 = random.randint(canvas_size[1] // 2, max_x2)
         random_y2 = random.randint(0, max_y2)
 
         # Paste the images on the canvas
         labels1 = self.paste_image(canvas, image1, (random_x1, random_y1))
         labels2 = self.paste_image(canvas, image2, (random_x2, random_y2))
         
-     
         return canvas, labels1, labels2
         
     def __len__(self):
+        """
+        Get the number of image pairs in the dataset.
+
+        Returns:
+            int: Number of image pairs.
+        """
         return len(self.random_pairs)
     
     def __getitem__(self, index):
+        """
+        Get a specific item from the dataset.
+
+        Args:
+            index (int): Index of the item to retrieve.
+
+        Returns:
+            tuple: Tuple containing the canvas, labels, image path, and shapes information.
+        """
+        # Reading the images and cropping the fingerprint
         image1 = self.crop_finger_print(self.random_pairs[index][0])
         image2 = self.crop_finger_print(self.random_pairs[index][1])
-        canvas, labels1, labels2 = self.combined_image_on_canvas((1024, 1024), image1, image2)
+        
+        # pasting cropped finger prints on the canvas
+        canvas, labels1, labels2 = self.combined_image_on_canvas(self.canvas_size, image1, image2)
+        
+        #Took this snippet from the default Dataset class for compatibility of shape 
         canvas = canvas.transpose((2, 0, 1))[::-1]  # HWC to CHW, BGR to RGB
         canvas = np.ascontiguousarray(canvas)
-        lb = xyxy2xywh(torch.Tensor([labels1, labels2]))/1024
+        
+        #Changing cordinates of bboxes from xyxy to xywh for Yolo compatibility also normalizing the values with canvas height and width 
+        lb = xyxy2xywh(torch.Tensor([labels1, labels2]))/self.canvas_size[0]
+        
+        #Converting the labels in expected format [[0, class, x,y,w,h]] (why the first is No idea) 
         labels_out = torch.cat([torch.zeros((2,lb.shape[0])).float(), lb],1)
-        shapes = ((1024, 1024), ((1.0, 1.0), (0.0, 0.0)))
+        
+        #Creating this for compatibility Not sure why and what it is. The value of this stays consistent withthe iamge shape
+        #Validated with coco128 dataset for each sample the value was ((640,640), ((1.0, 1.0), (0.0, 0.0)))
+        shapes = (self.canvas_size, ((1.0, 1.0), (0.0, 0.0)))
+        
+        # Returning the canvas , labels , image path(generally it is a single path so passed for first only) ,shapes
         return torch.from_numpy(canvas), labels_out, self.random_pairs[index][0], shapes
+        # For image path alternatively I could save the canvas and pass the new path of canvas image.
 
 
 def xyxy2xywh(x):
@@ -511,7 +639,7 @@ def xyxy2xywh(x):
     y[:, 3] = x[:, 3] - x[:, 1]  # height
     return y
 
-
+#--------------------------------------------------------------------------------------------------------------#
 
 
 class LoadImagesAndLabels(Dataset):
